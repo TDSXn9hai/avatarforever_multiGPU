@@ -6,7 +6,7 @@
 
 **Real-time · Long-horizon · Audio-driven · 27.2 FPS at 768 × 512 on one H100**
 
-Ruibin Li<sup>1,†</sup> · Tao Yang<sup>2</sup> · Zhiyuan Ma<sup>1</sup> · Fangzhou Ai<sup>3</sup> · Shilei Wen<sup>2</sup> · Lei Zhang<sup>1,*</sup>
+Ruibin Li<sup>1,†</sup> · Tao Yang<sup>2</sup> · Zhiyuan Ma<sup>1</sup> · Fangzhou Ai<sup>3</sup> · Lei Zhang<sup>1,*</sup>
 
 <sup>1</sup> The Hong Kong Polytechnic University · <sup>2</sup> ByteDance · <sup>3</sup> AMD
 
@@ -156,7 +156,7 @@ If you find the method useful, please cite
 ```
 @article{li2026avatarForever,
   title={Avatar-Forever: Decoupled Parallel Training for High-Quality Real-Time Infinite Avatars},
-  author={Li, Ruibin and Yang, tao and Ma, Zhiyuan and Ai, Fangzhou and Wen, shilei and Zhang, Lei},
+  author={Li, Ruibin and Yang, tao and Ma, Zhiyuan and Ai, Fangzhou and Zhang, Lei},
   journal={arXiv preprint arXiv:2608.12107},
   year={2026}
 }
