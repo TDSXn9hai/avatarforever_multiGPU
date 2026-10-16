@@ -134,6 +134,7 @@ def main() -> None:
         distilled_checkpoint_path=str(args.distilled_checkpoint_path),
         spatial_upsampler_path=None,
         gemma_root=str(args.gemma_root),
+        loras=[],
     )
     images = build_first_frame_images(
         args.first_frame_condition_image_path,
