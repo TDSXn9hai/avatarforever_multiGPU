@@ -1,0 +1,32 @@
+# 前端播放 / 音画同步 / 状态轮询参数
+#
+# 入口启动时会自动读取本文件，并通过 /frontend_config.json 提供给浏览器。
+# 修改后需要重启推理入口并刷新页面；页面本身不需要重新构建。
+# 命令行可用 --frontend-config <file> 指定其它文件，或用 --no-frontend-config 忽略本文件。
+
+# 多久没有新视频帧就暂停音频（毫秒）。20 fps 下单帧间隔为 50 ms，60 ms 略高于一帧。
+audio_stall_ms: 60
+
+# 音频与视频进度偏差超过多少秒时 seek 音频纠正。
+audio_drift_seconds: 0.20
+
+# 页面轮询 /status.json 的间隔（毫秒）。
+status_poll_ms: 100
+
+# 音画同步检查循环的间隔（毫秒）；应小于 audio_stall_ms。
+sync_interval_ms: 50
+
+# 单次 /status.json 请求的超时时间（毫秒）。
+status_timeout_ms: 2500
+
+# MJPEG 断线后，至少间隔多久才允许重连（毫秒）。
+stream_reconnect_ms: 3000
+
+# 音频播放失败/被浏览器拦截后的重试间隔（毫秒）。
+audio_retry_backoff_ms: 5000
+
+# job 之间没有新帧时，后端 MJPEG 重发最后一帧的间隔（秒）；避免长连接超时。
+mjpeg_keepalive_seconds: 0.25
+
+# 页面加载后是否默认尝试开启声音；浏览器仍可能要求点击一次才能播放。
+sound_enabled: true

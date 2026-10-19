@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -120,6 +121,75 @@ def build_tiling_config(args: argparse.Namespace) -> TilingConfig:
             tile_overlap_in_frames=args.temporal_tile_overlap,
         ),
     )
+
+
+def prepare_padded_audio(
+    audio_path: Path,
+    *,
+    video_duration: float,
+    output_dir: Path,
+    index: int,
+) -> Path:
+    """Write a WAV padded/truncated to exactly ``video_duration`` seconds.
+
+    The video frame count is rounded up to ``8n+1`` (and may be expanded to a full AR
+    chunk boundary), so the source audio is often shorter than the video.  Using this
+    file as the pipeline input keeps the generated audio track and the MP4 duration in
+    sync; the frontend also serves it through ``/audio/<index>``.
+    """
+    import wave
+
+    import av
+    import numpy as np
+
+    chunks: list[np.ndarray] = []
+    with av.open(str(audio_path)) as container:
+        stream = next(s for s in container.streams if s.type == "audio")
+        sample_rate = int(stream.rate)
+        channels = int(stream.channels or 1)
+        for frame in container.decode(stream):
+            array = frame.to_ndarray()
+            if array.dtype == np.int16:
+                array = array.astype(np.float32) / 32768.0
+            elif array.dtype == np.int32:
+                array = array.astype(np.float32) / 2147483648.0
+            elif array.dtype == np.uint8:
+                array = (array.astype(np.float32) - 128.0) / 128.0
+            else:
+                array = array.astype(np.float32)
+            if array.ndim == 1:
+                array = array[None, :]
+            chunks.append(array)
+
+    if not chunks:
+        raise ValueError(f"No audio samples decoded from {audio_path}")
+    waveform = np.concatenate(chunks, axis=-1)
+    if waveform.shape[0] == 1 and channels > 1:
+        waveform = np.repeat(waveform, channels, axis=0)
+    channels = int(waveform.shape[0])
+    target_samples = max(1, round(float(video_duration) * sample_rate))
+    current_samples = int(waveform.shape[-1])
+    if current_samples < target_samples:
+        waveform = np.pad(
+            waveform,
+            ((0, 0), (0, target_samples - current_samples)),
+            mode="constant",
+        )
+    elif current_samples > target_samples:
+        waveform = waveform[..., :target_samples]
+
+    out_dir = Path(output_dir) / "audio_padded"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = out_dir / f"{Path(audio_path).stem}_{int(index):04d}_{timestamp}.wav"
+    pcm16 = np.clip(waveform.T, -1.0, 1.0)
+    pcm16 = (pcm16 * 32767.0).astype(np.int16)
+    with wave.open(str(out_path), "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(pcm16.tobytes())
+    return out_path
 
 
 def resolve_output_path(args: argparse.Namespace) -> Path:

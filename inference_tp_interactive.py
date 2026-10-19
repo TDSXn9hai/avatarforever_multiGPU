@@ -14,6 +14,15 @@ Example:
 Startup arguments retain the normal inference settings. ``--audio-path`` and
 ``--prompt`` are entered interactively after model loading. ``--num-frames``
 is optional; when omitted, it is inferred from each audio file duration.
+
+Batch mode:
+    Add ``--audio-dir /audio`` (plus optionally ``--prompt "<text>"``) to process every
+    audio file in that folder, sorted by name, one after another without asking between
+    jobs; the process exits when the folder is exhausted. Output files are prefixed with
+    the source audio stem (``<stem>_<index>_<timestamp>.mp4``) so each video maps back to
+    its segment. When ``--prompt`` is omitted the prompt is asked once before the batch
+    starts and reused for every file; ``--num-frames``, when given, is applied to every
+    file, otherwise the frame count is inferred per file.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ import math
 import os
 import sys
 import time
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +45,11 @@ import torch.distributed as dist
 
 
 EXIT_COMMANDS = frozenset({":q", ":quit", "/exit", "/quit", "exit", "quit"})
+
+# Extensions accepted by --audio-dir; anything else in the folder is ignored.
+AUDIO_EXTENSIONS = frozenset(
+    {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".aif", ".aiff"}
+)
 
 
 def _set_optional_interactive_arguments(parser: argparse.ArgumentParser) -> None:
@@ -50,6 +65,19 @@ def _set_optional_interactive_arguments(parser: argparse.ArgumentParser) -> None
                 "Fixed output frame count for every job. If omitted, infer from each audio duration "
                 "and round up to 8n+1."
             )
+
+
+def _add_batch_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--audio-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Batch mode: process every audio file in this folder (sorted by name) one after another, "
+            "then exit. The prompt is taken from --prompt, or asked once at startup when --prompt is "
+            "omitted. Without this option the entry point keeps its interactive behaviour."
+        ),
+    )
 
 
 def _audio_duration_seconds(audio_path: Path) -> float:
@@ -108,6 +136,83 @@ def _read_multiline_prompt(default_prompt: str) -> str | None:
     return prompt or default_prompt
 
 
+def _make_job(
+    audio_path: Path,
+    prompt: str,
+    frame_rate: float,
+    fixed_num_frames: int | None,
+    *,
+    duration: float | None = None,
+) -> dict[str, Any]:
+    """Build the job payload that is broadcast to every rank."""
+    duration = _audio_duration_seconds(audio_path) if duration is None else duration
+    num_frames = fixed_num_frames or _frames_for_duration(duration, frame_rate)
+    return {
+        "exit": False,
+        "audio_path": str(audio_path),
+        "audio_stem": audio_path.stem,
+        "prompt": prompt,
+        "num_frames": num_frames,
+        "audio_duration": duration,
+    }
+
+
+def _list_audio_files(directory: Path) -> list[Path]:
+    if not directory.is_dir():
+        raise NotADirectoryError(f"音频目录不存在或不是目录：{directory}")
+    return sorted(
+        (path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS),
+        key=lambda path: path.name,
+    )
+
+
+def _read_batch_jobs(
+    audio_dir: Path,
+    *,
+    default_prompt: str,
+    prompt: str | None,
+    frame_rate: float,
+    fixed_num_frames: int | None,
+) -> Iterator[dict[str, Any]]:
+    """Yield one job per audio file in ``audio_dir`` (rank 0 only), then an exit job."""
+    try:
+        files = _list_audio_files(audio_dir)
+    except Exception as exc:  # noqa: BLE001
+        print(f"读取音频目录失败：{exc}")
+        yield {"exit": True}
+        return
+
+    if not files:
+        print(f"目录中没有可用音频文件（支持 {', '.join(sorted(AUDIO_EXTENSIONS))}）：{audio_dir}")
+        yield {"exit": True}
+        return
+
+    if prompt is None:
+        print(f"批量模式：将处理 {audio_dir} 下的 {len(files)} 个音频文件：")
+        for index, path in enumerate(files, 1):
+            print(f"  {index:3d}. {path.name}")
+        prompt = _read_multiline_prompt(default_prompt)
+        if prompt is None:
+            yield {"exit": True}
+            return
+
+    print(f"批量模式：共 {len(files)} 个音频文件，提示词已固定，逐个生成。")
+    for index, path in enumerate(files, 1):
+        try:
+            job = _make_job(path, prompt, frame_rate, fixed_num_frames)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[batch] {index}/{len(files)} 读取失败，跳过：{path.name}（{exc}）")
+            continue
+        print(
+            f"[batch] {index}/{len(files)}：{path.name}，时长 {job['audio_duration']:.3f}s，"
+            f"{job['num_frames']} 帧"
+        )
+        yield job
+
+    print(f"批量模式：{len(files)} 个音频文件已全部处理。")
+    yield {"exit": True}
+
+
 def _read_job_from_rank0(
     default_prompt: str,
     frame_rate: float,
@@ -144,19 +249,12 @@ def _read_job_from_rank0(
         if prompt is None:
             return {"exit": True}
 
-        num_frames = fixed_num_frames or _frames_for_duration(duration, frame_rate)
-        video_duration = num_frames / frame_rate
+        job = _make_job(audio_path, prompt, frame_rate, fixed_num_frames, duration=duration)
         print(
             f"已读取音频：{audio_path}，时长 {duration:.3f}s；"
-            f"本次生成 {num_frames} 帧，视频时长约 {video_duration:.3f}s。"
+            f"本次生成 {job['num_frames']} 帧，视频时长约 {job['num_frames'] / frame_rate:.3f}s。"
         )
-        return {
-            "exit": False,
-            "audio_path": str(audio_path),
-            "prompt": prompt,
-            "num_frames": num_frames,
-            "audio_duration": duration,
-        }
+        return job
 
 
 def _broadcast_job(job: dict[str, Any], world_size: int) -> dict[str, Any]:
@@ -171,10 +269,13 @@ def _output_path_for_job(
     args: argparse.Namespace,
     *,
     job_index: int,
+    audio_stem: str | None = None,
 ) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Batch runs carry the source audio stem so each video stays traceable to its segment.
+    label = f"{audio_stem}_{job_index:04d}" if audio_stem else f"interactive_{job_index:04d}"
     if args.output_path is None:
-        path = args.output_dir / f"interactive_{job_index:04d}_{timestamp}.mp4"
+        path = args.output_dir / f"{label}_{timestamp}.mp4"
     else:
         configured = Path(args.output_path)
         if "{index" in str(configured) or "{timestamp" in str(configured):
@@ -182,11 +283,12 @@ def _output_path_for_job(
                 str(configured).format(
                     index=job_index,
                     timestamp=timestamp,
+                    stem=audio_stem or "interactive",
                 )
             )
         else:
             path = configured.with_name(
-                f"{configured.stem}_interactive_{job_index:04d}_{timestamp}{configured.suffix or '.mp4'}"
+                f"{configured.stem}_{label}_{timestamp}{configured.suffix or '.mp4'}"
             )
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -249,6 +351,7 @@ def main() -> None:
 
     parser = build_arg_parser()
     _set_optional_interactive_arguments(parser)
+    _add_batch_arguments(parser)
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -304,28 +407,49 @@ def main() -> None:
         print("退出命令：:q、:quit、/exit、/quit、exit、quit。")
 
     job_index = 0
+    batch_jobs: Iterator[dict[str, Any]] | None = None
+    if is_main and args.audio_dir is not None:
+        batch_jobs = _read_batch_jobs(
+            Path(args.audio_dir).expanduser(),
+            default_prompt=DEFAULT_PROMPT,
+            prompt=args.prompt,
+            frame_rate=args.frame_rate,
+            fixed_num_frames=args.num_frames,
+        )
+
     try:
         while True:
-            job = (
-                _read_job_from_rank0(
-                    DEFAULT_PROMPT,
-                    args.frame_rate,
-                    args.num_frames,
-                )
-                if is_main
-                else None
-            )
+            if is_main:
+                if batch_jobs is not None:
+                    job = next(batch_jobs, {"exit": True})
+                else:
+                    job = _read_job_from_rank0(
+                        DEFAULT_PROMPT,
+                        args.frame_rate,
+                        args.num_frames,
+                    )
+            else:
+                job = None
             job = _broadcast_job(job, world_size)
             if job["exit"]:
                 if is_main:
-                    print("收到退出指令，正在卸载模型并释放显存。")
+                    if batch_jobs is not None:
+                        print("批量任务处理完毕，正在卸载模型并释放显存。")
+                    else:
+                        print("收到退出指令，正在卸载模型并释放显存。")
                 break
 
             job_index += 1
             num_frames = int(job["num_frames"])
             args.num_frames = num_frames
             video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
-            output_path = _output_path_for_job(args, job_index=job_index)
+            output_path = _output_path_for_job(
+                args,
+                job_index=job_index,
+                # Only batch runs rename outputs after the source audio; the interactive
+                # mode keeps its documented `interactive_<index>_<timestamp>.mp4` scheme.
+                audio_stem=job.get("audio_stem") if batch_jobs is not None else None,
+            )
             log_path = _job_log_path(output_path)
             start_time = time.time()
             job_log_handler = _attach_job_file_handler(log_path) if is_main else None
@@ -417,7 +541,7 @@ def main() -> None:
                 print(f"本次耗时：{total_seconds:.2f}s；模型仍常驻显卡。")
 
             continue_job = True
-            if is_main:
+            if is_main and batch_jobs is None:
                 try:
                     answer = input("再来一个？输入 y 继续，输入 n 或退出命令结束：").strip().lower()
                 except (EOFError, KeyboardInterrupt):

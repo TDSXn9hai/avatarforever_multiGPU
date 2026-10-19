@@ -1,0 +1,58 @@
+# AvatarForever 流式推理默认配置
+#
+# 用法：
+#   ./run_stream.sh                      # 使用本文件
+#   ./run_stream.sh my_config.yaml       # 使用另一份配置
+#   ./run_stream.sh --max-files 7        # 本文件 + 命令行覆盖
+#   python inference_tp_folder_ar_stream.py --no-config ...   # 完全忽略本文件
+#
+# 优先级：内置默认值 < 本文件 < 命令行参数。
+# 路径按“当前工作目录”解析；run_stream.sh 会先切换到项目根目录。
+
+# ---- 模型 ----
+distilled-checkpoint-path: checkpoints/avatarforever-ltx-2.3-22b.safetensors
+gemma-root: checkpoints/gemma-3-12b-it-qat-q4_0-unquantized
+
+# ---- 音频输入 ----
+# watch: true 时，先处理目录里已有的音频，然后持续等待新文件。
+# max-files 是上限而非必须达到的数量；不足 100 个时处理完即进入等待。
+audio-dir: audio
+max-files: 100
+watch: true
+poll-interval: 1.0
+stable-seconds: 1.0
+watch-sort: name
+# 0 表示永不因空闲退出；需要自动退出时改成秒数，例如 600。
+idle-exit-seconds: 30
+
+# ---- 输出 ----
+output-dir: output/sentence_test_0
+frame-rate: 20
+height: 192
+width: 352
+video-crf: 12
+# 默认不写 MP4，只做实时直播；需要存档/回看/下载时改成 true。
+package-video: false
+
+# ---- 自回归 / 异步 VAE ----
+fast-infer: true
+ar-video-chunk-size: 4
+ar-sink-first-chunk: true
+ar-relative-positions: true
+window-chunks: 2
+carry-history: true
+# 非末段视频向上扩展到完整 chunk 边界，并给音轨补静音，保证视频不短于音频。
+trim-to-full-chunks: true
+
+# 第一个可见 GPU 跑 DiT，auto 使用第二个可见 GPU 做 VAE 解码。
+decode-device: auto
+
+# ---- HTTP / MJPEG 前端 ----
+host: 0.0.0.0
+port: 8080
+jpeg-quality: 85
+# 所有任务结束后 Web 服务继续存活的秒数（watch 模式下通常不会走到这里）。
+linger-seconds: 10
+
+# 提示词留空时使用入口内置的数字人直播提示词；需要覆盖时取消下一行注释。
+# prompt: "your custom prompt"

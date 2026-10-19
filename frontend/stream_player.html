@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Avatar-Forever 流式生成</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #151b2f;
+      --panel-2: #1c2440;
+      --text: #e8ecf8;
+      --muted: #98a2bd;
+      --accent: #6ea8fe;
+      --ok: #5ddba0;
+      --warn: #ffcc66;
+      --err: #ff7b85;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1000px 600px at 15% -10%, #21366b 0%, transparent 60%),
+        radial-gradient(800px 500px at 90% 0%, #3a1f54 0%, transparent 55%),
+        var(--bg);
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
+    header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+    h1 { font-size: 24px; margin: 0; letter-spacing: .3px; }
+    .sub { color: var(--muted); font-size: 13px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(280px, .75fr); gap: 18px; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0));
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 16px;
+      box-shadow: 0 18px 50px rgba(0,0,0,.28);
+    }
+    .stage { overflow: hidden; }
+    .stage-head {
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.07);
+    }
+    .live-dot {
+      width: 9px; height: 9px; border-radius: 50%; background: var(--muted);
+      box-shadow: 0 0 0 4px rgba(152,162,189,.12); display: inline-block; margin-right: 8px;
+    }
+    .live-dot.on { background: var(--ok); box-shadow: 0 0 0 4px rgba(93,219,160,.15); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 50% { opacity: .45; } }
+    .screen {
+      position: relative; background: #05070d; aspect-ratio: 16 / 9; display: grid; place-items: center;
+    }
+    .screen img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .screen video { width: 100%; height: 100%; object-fit: contain; display: none; background: #05070d; }
+    .sound-overlay {
+      position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+      z-index: 3; background: rgba(36, 87, 184, .94); border-color: #5b8ef0;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35); white-space: nowrap;
+    }
+    .sound-overlay.hidden { display: none; }
+    .wait-overlay {
+      position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
+      z-index: 3; padding: 6px 12px; border-radius: 999px;
+      background: rgba(8, 12, 24, .72); color: var(--warn); font-size: 12px;
+      border: 1px solid rgba(255,204,102,.25); white-space: nowrap;
+    }
+    .wait-overlay.hidden { display: none; }
+    .screen .placeholder { color: var(--muted); font-size: 14px; padding: 20px; text-align: center; }
+    .toolbar { display: flex; gap: 10px; align-items: center; padding: 12px 16px; flex-wrap: wrap; }
+    button {
+      appearance: none; border: 1px solid rgba(255,255,255,.14); background: var(--panel-2);
+      color: var(--text); padding: 8px 14px; border-radius: 10px; cursor: pointer; font-size: 13px;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: #2457b8; border-color: #3d74db; }
+    audio { width: 100%; }
+    .side { padding: 16px; }
+    .side h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; letter-spacing: .4px; }
+    .facts { display: grid; gap: 9px; }
+    .fact { display: grid; grid-template-columns: 112px 1fr; gap: 10px; font-size: 13px; align-items: baseline; }
+    .fact .k { color: var(--muted); }
+    .fact .v { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .bar { height: 7px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; margin-top: 4px; }
+    .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4f8cff, #8b5cf6); transition: width .3s; }
+    .videos { margin-top: 22px; }
+    .videos h2 { font-size: 16px; margin: 0 0 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+    .video-card { padding: 12px; }
+    .video-card video { width: 100%; border-radius: 10px; background: #05070d; }
+    .video-card .meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+    .error { margin-top: 16px; color: var(--err); white-space: pre-wrap; font-size: 13px; }
+    .pill { display: inline-block; padding: 3px 9px; border-radius: 999px; background: rgba(255,255,255,.07); font-size: 12px; color: var(--muted); }
+    .pill.ok { color: var(--ok); background: rgba(93,219,160,.1); }
+    .pill.warn { color: var(--warn); background: rgba(255,204,102,.1); }
+  </style>
+</head>
+<body>
+<noscript>此页面需要启用 JavaScript 才能显示直播与状态。</noscript>
+<main>
+  <header>
+    <h1>Avatar-Forever 流式生成</h1>
+    <span class="sub">DiT 在 GPU0 生成 chunk，VAE 在后台异步解码，浏览器边生成边播放</span>
+  </header>
+
+  <div class="layout">
+    <section class="card stage">
+      <div class="stage-head">
+        <div><span id="liveDot" class="live-dot"></span><span id="phaseText">连接中…</span></div>
+        <div id="jobText" class="pill">job -</div>
+      </div>
+      <div class="screen">
+        <div id="placeholder" class="placeholder">等待第一帧…<br />生成开始后这里会自动播放</div>
+        <img id="live" alt="live stream" style="display:none" />
+        <video id="stageVideo" controls preload="metadata" style="display:none"></video>
+        <div id="waitOverlay" class="wait-overlay hidden">等待下一段音频…</div>
+        <button id="soundOverlay" class="sound-overlay hidden">🔊 点击页面任意位置开启声音</button>
+      </div>
+      <div class="toolbar">
+        <button id="soundBtn" class="primary">开启声音</button>
+        <button id="reconnectBtn">重连画面</button>
+        <span id="fpsText" class="pill">0 fps</span>
+        <span id="decodeText" class="pill">VAE -</span>
+      </div>
+      <div style="padding: 0 16px 16px;">
+        <audio id="audio" controls preload="auto"></audio>
+        <div style="color:var(--muted);font-size:12px;margin-top:6px;">
+          默认会尝试自动播放源音频；若浏览器拦截，点击页面任意位置一次即可开启。
+        </div>
+      </div>
+    </section>
+
+    <aside class="card side">
+      <h2>生成状态</h2>
+      <div class="facts">
+        <div class="fact"><span class="k">当前音频</span><span class="v" id="audioName">-</span></div>
+        <div class="fact"><span class="k">帧进度</span><span class="v" id="frameCount">0 / 0</span></div>
+        <div class="fact" style="grid-template-columns:1fr;"><div class="bar"><i id="progress"></i></div></div>
+        <div class="fact"><span class="k">已解码 chunk</span><span class="v" id="chunkCount">0</span></div>
+        <div class="fact"><span class="k">VAE 设备</span><span class="v" id="decodeDevice">-</span></div>
+        <div class="fact"><span class="k">上次解码</span><span class="v" id="decodeMs">-</span></div>
+        <div class="fact"><span class="k">解码窗口</span><span class="v" id="decodeWindow">-</span></div>
+        <div class="fact"><span class="k">已运行</span><span class="v" id="elapsed">0 s</span></div>
+        <div class="fact"><span class="k">生成队列</span><span class="v" id="generatingText">-</span></div>
+        <div class="fact"><span class="k">声音</span><span class="v" id="audioState">未开启</span></div>
+        <div class="fact"><span class="k">前端连接</span><span class="v" id="clients">0</span></div>
+      </div>
+      <div id="error" class="error"></div>
+    </aside>
+  </div>
+
+  <section class="videos">
+    <h2>已完成的视频</h2>
+    <p id="videoHint" style="display:none;color:var(--muted);font-size:13px;margin:0 0 12px">
+      本次运行未打包 MP4；需要回看或下载时加 <code>--package-video</code> 重启。
+    </p>
+    <div id="videoGrid" class="grid"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+window.addEventListener('error', (event) => {
+  const box = document.getElementById('error');
+  if (box) box.textContent = '前端脚本错误：' + (event.message || event.error || 'unknown');
+});
+window.addEventListener('unhandledrejection', (event) => {
+  const box = document.getElementById('error');
+  const reason = (event.reason && (event.reason.message || String(event.reason))) || 'unknown';
+  if (box) box.textContent = '前端脚本错误：' + reason;
+});
+const live = $('live');
+const placeholder = $('placeholder');
+const stageVideo = $('stageVideo');
+const waitOverlay = $('waitOverlay');
+const audio = $('audio');
+let soundEnabled = true;   // try audible autoplay by default; browser policy may still require one click
+let lastJob = null;
+let audioJob = null;
+let audioStarted = false;
+let lastPhase = 'loading';
+let streamConnected = false;
+let lastStreamErrorAt = 0;
+let lastStatus = null;
+let audioStarting = false;
+let lastAudioErrorAt = 0;
+let hasPlayed = false;
+let lastFrames = -1;
+let lastFrameAdvanceAt = 0;
+let bufferingPaused = false;
+let userPaused = false;
+let expectedPause = false;
+let AUDIO_STALL_MS = 60;        // pause audio when no new frame for this long
+let AUDIO_DRIFT_S = 0.20;       // seek when audio/video drift exceeds this
+let STATUS_POLL_MS = 100;
+let SYNC_INTERVAL_MS = 50;
+let STATUS_TIMEOUT_MS = 2500;
+let STREAM_RECONNECT_MS = 3000;
+let AUDIO_RETRY_BACKOFF_MS = 5000;
+let knownVideos = new Set();
+
+function connectStream() {
+  if (streamConnected) return;
+  if (Date.now() - lastStreamErrorAt < STREAM_RECONNECT_MS) return;
+  streamConnected = true;
+  live.style.display = 'none';
+  placeholder.style.display = 'grid';
+  placeholder.innerHTML = '等待第一帧…<br />生成开始后这里会自动播放';
+  live.onload = () => {
+    hasPlayed = true;
+    live.style.display = 'block';
+    placeholder.style.display = 'none';
+  };
+  live.onerror = () => {
+    streamConnected = false;
+    lastStreamErrorAt = Date.now();
+    if (lastPhase === 'done' || lastPhase === 'error') return;
+    live.style.display = 'none';
+    placeholder.style.display = 'grid';
+    placeholder.innerHTML = (lastStatus && lastStatus.package_video === false)
+      ? '直播流暂不可用<br />本次未打包视频，请确认推理进程仍在运行'
+      : '直播流暂不可用<br />完成后可在页面下方播放 MP4';
+  };
+  live.src = '/stream.mjpg?ts=' + Date.now();
+}
+
+function disconnectStream() {
+  streamConnected = false;
+  live.removeAttribute('src');
+  live.style.display = 'none';
+}
+
+$('reconnectBtn').onclick = connectStream;
+
+function updateSoundUi() {
+  const livePhase = lastPhase === 'generating' || lastPhase === 'encoding';
+  const playing = soundEnabled && audioStarted && !audio.paused;
+  $('soundBtn').textContent = soundEnabled ? '关闭声音' : '开启声音';
+  $('audioState').textContent = playing
+    ? '播放中'
+    : (bufferingPaused ? '等待视频' : (soundEnabled ? '等待播放' : '未开启'));
+  const overlay = $('soundOverlay');
+  const showOverlay = livePhase
+    && !!lastStatus
+    && (lastStatus.frames_published || 0) > 0
+    && !playing
+    && !bufferingPaused;
+  overlay.textContent = userPaused ? '🔊 点击继续播放声音' : '🔊 点击页面任意位置开启声音';
+  overlay.classList.toggle('hidden', !showOverlay);
+}
+
+function isVideoStalled() {
+  if (!lastStatus || (lastStatus.frames_published || 0) <= 0) return true;
+  if (!lastFrameAdvanceAt) return false;
+  return Date.now() - lastFrameAdvanceAt > AUDIO_STALL_MS;
+}
+
+function audioTarget() {
+  if (!lastStatus) return 0;
+  const fps = lastStatus.fps || 20;
+  let target = Math.max(0, (lastStatus.frames_published || 0) / fps - 0.2);
+  if (isFinite(audio.duration) && audio.duration > 0) {
+    target = Math.min(target, Math.max(0, audio.duration - 0.05));
+  }
+  return target;
+}
+
+function seekAudio(target) {
+  try {
+    if (audio.readyState >= 1) audio.currentTime = target;
+  } catch (e) {
+    console.warn('audio seek failed', e);
+  }
+}
+
+function pauseAudioForBuffer() {
+  bufferingPaused = true;
+  seekAudio(audioTarget());
+  if (!audio.paused) {
+    expectedPause = true;
+    audio.pause();
+  }
+}
+
+function pauseAudioSilently() {
+  if (!audio.paused) {
+    expectedPause = true;
+    audio.pause();
+  }
+  audioStarted = false;
+  bufferingPaused = false;
+  userPaused = false;
+}
+
+async function resumeAudioFromBuffer() {
+  bufferingPaused = false;
+  seekAudio(audioTarget());
+  try {
+    if (!audio.src && lastStatus && lastStatus.job_index) {
+      audio.src = `/audio/${lastStatus.job_index}`;
+      audio.load();
+    }
+    audio.muted = false;
+    await audio.play();
+    audioStarted = true;
+    $('error').textContent = '';
+  } catch (e) {
+    audioStarted = false;
+    lastAudioErrorAt = Date.now();
+    $('error').textContent = '音频恢复播放被浏览器拦截，请点击页面任意位置一次。';
+    addAudioUnlockListeners();
+  } finally {
+    updateSoundUi();
+  }
+}
+
+function syncAudioToFrames() {
+  if (!soundEnabled || userPaused || !lastStatus) return;
+  if (lastPhase !== 'generating' && lastPhase !== 'encoding') return;
+  const frames = lastStatus.frames_published || 0;
+  if (frames <= 0) return;
+
+  const now = Date.now();
+  if (!lastFrameAdvanceAt) {
+    lastFrameAdvanceAt = now;
+    lastFrames = frames;
+    return;
+  }
+  if (frames > lastFrames) {
+    lastFrames = frames;
+    lastFrameAdvanceAt = now;
+  }
+
+  // No new frame for AUDIO_STALL_MS means the video is buffering/stalled: hold the audio.
+  if (now - lastFrameAdvanceAt > AUDIO_STALL_MS) {
+    pauseAudioForBuffer();
+    updateSoundUi();
+    return;
+  }
+
+  if (bufferingPaused) {
+    if (audio.paused) resumeAudioFromBuffer();
+    else {
+      bufferingPaused = false;
+      seekAudio(audioTarget());
+      updateSoundUi();
+    }
+    return;
+  }
+
+  // Keep a small tolerance; beyond it, seek audio to the current video frame.
+  if (!audio.paused && Math.abs(audio.currentTime - audioTarget()) > AUDIO_DRIFT_S) {
+    seekAudio(audioTarget());
+  }
+}
+
+async function startAudio(force = false) {
+  if ((!force && audioStarting) || !soundEnabled || !lastStatus || !lastStatus.job_index) return;
+  if (lastPhase === 'done' || lastPhase === 'error') return;
+  if ((lastStatus.frames_published || 0) <= 0) return;
+  if (isVideoStalled()) {
+    bufferingPaused = true;
+    updateSoundUi();
+    return;
+  }
+
+  audioStarting = true;
+  userPaused = false;
+  bufferingPaused = false;
+  expectedPause = false;
+  lastFrames = lastStatus.frames_published || 0;
+  lastFrameAdvanceAt = Date.now();
+  const job = lastStatus.job_index;
+  if (audioJob !== job || !audio.src) {
+    audioJob = job;
+    audio.src = `/audio/${job}`;
+    audio.load();
+  }
+  const offset = audioTarget();
+  const seek = () => seekAudio(offset);
+  if (audio.readyState >= 1) seek();
+  else audio.addEventListener('loadedmetadata', seek, { once: true });
+
+  try {
+    audio.muted = false;
+    await audio.play();          // called synchronously from the click gesture
+    audioStarted = true;
+    $('error').textContent = '';
+  } catch (e) {
+    audioStarted = false;
+    lastAudioErrorAt = Date.now();
+    $('error').textContent = '浏览器拦截了自动播放，请点击页面任意位置一次开启声音。';
+    addAudioUnlockListeners();
+    console.warn('audio play failed', e);
+  } finally {
+    audioStarting = false;
+    updateSoundUi();
+  }
+}
+
+function enableSound() {
+  soundEnabled = true;
+  userPaused = false;
+  updateSoundUi();
+  if (isVideoStalled()) {
+    bufferingPaused = true;
+    updateSoundUi();
+    return;
+  }
+  bufferingPaused = false;
+  startAudio(true);
+}
+
+function removeAudioUnlockListeners() {
+  document.removeEventListener('pointerdown', unlockAudio, true);
+  document.removeEventListener('keydown', unlockAudio, true);
+  document.removeEventListener('touchstart', unlockAudio, true);
+}
+
+function addAudioUnlockListeners() {
+  document.addEventListener('pointerdown', unlockAudio, true);
+  document.addEventListener('keydown', unlockAudio, true);
+  document.addEventListener('touchstart', unlockAudio, true);
+}
+
+function unlockAudio(event) {
+  const target = event && event.target;
+  if (target && (target.id === 'soundBtn' || (target.closest && target.closest('audio')))) return;
+  enableSound();
+  if (audioStarted && !audio.paused) removeAudioUnlockListeners();
+}
+
+addAudioUnlockListeners();
+
+$('soundBtn').onclick = () => {
+  if (soundEnabled) {
+    soundEnabled = false;
+    removeAudioUnlockListeners();
+    audio.pause();
+    audioStarted = false;
+    updateSoundUi();
+  } else {
+    enableSound();
+  }
+};
+$('soundOverlay').onclick = enableSound;
+audio.addEventListener('play', () => {
+  audioStarted = true;
+  userPaused = false;
+  bufferingPaused = false;
+  expectedPause = false;
+  removeAudioUnlockListeners();
+  updateSoundUi();
+});
+audio.addEventListener('pause', () => {
+  audioStarted = false;
+  if (expectedPause) {
+    expectedPause = false;
+  } else if (!bufferingPaused) {
+    userPaused = true;
+  }
+  updateSoundUi();
+});
+audio.addEventListener('ended', () => { audioStarted = false; updateSoundUi(); });
+
+function updateStatus(s) {
+  const phase = s.phase || 'unknown';
+  const phaseMap = {
+    loading: '模型加载中',
+    generating: '生成中',
+    encoding: '收尾中',
+    waiting: '等待下一段音频',
+    done: (s.package_video === false ? '已完成 · 未打包视频' : '已完成'),
+    error: '出错',
+  };
+  const watch = !!s.watch;
+  const waiting = watch && !!s.waiting_for_next && (!s.job_index || !!s.live_job_done);
+  const preparing = watch && !!s.generating_job_index && !!s.live_job_done;
+  const hasFrames = (s.frames_published || 0) > 0;
+  lastPhase = phase;
+  lastStatus = s;
+  const preparingGap = !watch && hasPlayed && !hasFrames
+    && (phase === 'generating' || phase === 'encoding' || phase === 'loading' || phase === 'waiting');
+  const phaseLabel = (preparing || preparingGap)
+    ? '准备下一段'
+    : ((phase === 'waiting' && !waiting) ? '播放收尾中' : (phaseMap[phase] || phase));
+  $('phaseText').textContent = waiting ? '等待下一段音频' : phaseLabel;
+  $('liveDot').className = 'live-dot ' + (phase === 'generating' ? 'on' : '');
+  $('jobText').textContent = s.job_index
+    ? (watch ? `播放 job ${s.job_index}` : `job ${s.job_index}/${s.job_total || '?'}`)
+    : 'job -';
+  $('generatingText').textContent = (
+    s.generating_job_index && s.generating_job_index !== s.job_index
+  ) ? `生成 job ${s.generating_job_index}` : '-';
+  $('audioName').textContent = s.job_name || '-';
+  $('frameCount').textContent = `${s.frames_published || 0} / ${s.num_frames || 0}`;
+  const pct = s.num_frames ? Math.min(100, 100 * (s.frames_published || 0) / s.num_frames) : 0;
+  $('progress').style.width = pct + '%';
+  $('chunkCount').textContent = s.decoded_chunks || 0;
+  $('decodeDevice').textContent = s.decode_device || '-';
+  $('decodeMs').textContent = s.last_decode_ms ? `${s.last_decode_ms} ms` : '-';
+  $('decodeWindow').textContent = (s.decode_window && s.decode_window.length === 2)
+    ? `${s.decode_window[0]} → ${s.decode_window[1]} latent`
+    : '-';
+  $('elapsed').textContent = `${s.elapsed || 0} s`;
+  $('clients').textContent = s.stream_clients || 0;
+  $('fpsText').textContent = `${s.fps || 0} fps`;
+  $('decodeText').textContent = s.decode_backlog
+    ? `VAE 积压 ${s.decode_backlog} 帧`
+    : 'VAE 已跟上';
+  $('error').textContent = s.error ? String(s.error) : '';
+  const packaging = s.package_video !== false;
+  $('videoHint').style.display = packaging ? 'none' : 'block';
+
+  if (watch) {
+    // Keep one MJPEG connection alive across jobs. The publisher chain waits for the previous
+    // job's playback to finish, so the next job's frames arrive immediately after the last frame.
+    stageVideo.style.display = 'none';
+    waitOverlay.textContent = (preparing && !waiting) ? '正在准备下一段…' : '等待下一段音频…';
+    waitOverlay.classList.toggle('hidden', !(waiting || preparing));
+    if (phase === 'error') {
+      disconnectStream();
+      placeholder.style.display = 'grid';
+      placeholder.innerHTML = '生成出错<br />请查看右侧错误信息';
+    } else if (phase === 'waiting' || waiting || phase === 'generating' || phase === 'encoding') {
+      if (!streamConnected) connectStream();
+      if (waiting || preparing) {
+        pauseAudioSilently();
+        placeholder.innerHTML = (preparing && !waiting) ? '正在准备下一段…' : '等待下一段音频…';
+      }
+      if (hasFrames) {
+        hasPlayed = true;
+        placeholder.style.display = 'none';
+        live.style.display = 'block';
+      }
+    } else if (phase === 'done') {
+      // Watch stopped: keep the last live frame; videos are available in the grid below.
+      pauseAudioSilently();
+      waitOverlay.classList.add('hidden');
+    } else {
+      placeholder.style.display = 'grid';
+    }
+  } else if ((phase === 'generating' || phase === 'encoding') && hasFrames) {
+    hasPlayed = true;
+    waitOverlay.classList.add('hidden');
+    stageVideo.style.display = 'none';
+    connectStream();
+  } else if (phase === 'generating' || phase === 'encoding') {
+    // New job has started but its first frame is not ready yet. Keep the last frame visible
+    // instead of replacing it with the black "loading" placeholder.
+    stageVideo.style.display = 'none';
+    if (!streamConnected) connectStream();
+    if (hasPlayed) {
+      waitOverlay.textContent = '正在准备下一段…';
+      waitOverlay.classList.remove('hidden');
+      placeholder.style.display = 'none';
+      live.style.display = 'block';
+      pauseAudioSilently();
+    } else {
+      waitOverlay.classList.add('hidden');
+      placeholder.style.display = 'grid';
+      placeholder.innerHTML = '等待首帧…<br />首帧出现后自动开始播放';
+    }
+  } else if (phase === 'done') {
+    waitOverlay.classList.add('hidden');
+    pauseAudioSilently();
+    const videos = s.videos || [];
+    if (videos.length) {
+      disconnectStream();
+      const latest = videos[videos.length - 1];
+      if (stageVideo.getAttribute('src') !== latest.url) stageVideo.src = latest.url;
+      stageVideo.style.display = 'block';
+      placeholder.style.display = 'none';
+    } else if (hasPlayed) {
+      // No packaged MP4: keep the final live frame instead of a black placeholder.
+      stageVideo.style.display = 'none';
+      placeholder.style.display = 'none';
+      live.style.display = 'block';
+      if (!streamConnected) connectStream();
+    } else {
+      disconnectStream();
+      placeholder.style.display = 'grid';
+      placeholder.innerHTML = '生成已完成<br />本次未打包视频';
+    }
+  } else if (phase === 'error') {
+    waitOverlay.classList.add('hidden');
+    disconnectStream();
+    pauseAudioSilently();
+    placeholder.style.display = 'grid';
+    placeholder.innerHTML = '生成出错<br />请查看右侧错误信息';
+  } else {
+    if (hasPlayed || (s.videos || []).length) {
+      stageVideo.style.display = 'none';
+      if (!streamConnected) connectStream();
+      waitOverlay.textContent = '正在准备下一段…';
+      waitOverlay.classList.remove('hidden');
+      if (hasPlayed) {
+        placeholder.style.display = 'none';
+        live.style.display = 'block';
+      }
+      pauseAudioSilently();
+    } else {
+      waitOverlay.classList.add('hidden');
+      disconnectStream();
+      pauseAudioSilently();
+      stageVideo.style.display = 'none';
+      placeholder.style.display = 'grid';
+      placeholder.innerHTML = phase === 'loading'
+        ? '模型加载中…<br />首帧出现后自动开始播放'
+        : '连接中…';
+    }
+  }
+
+  if (s.job_index && s.job_index !== lastJob) {
+    lastJob = s.job_index;
+    audioJob = s.job_index;
+    pauseAudioSilently();
+    lastFrames = -1;
+    lastFrameAdvanceAt = 0;
+    audio.src = `/audio/${s.job_index}`;
+    audio.load();
+    if (soundEnabled && (s.frames_published || 0) > 0) startAudio();
+  }
+
+  // The source audio is separate from MJPEG; start it only during live generation.
+  if (
+    soundEnabled
+    && (phase === 'generating' || phase === 'encoding')
+    && (s.frames_published || 0) > 0
+    && !audioStarted
+    && !userPaused
+    && !bufferingPaused
+    && Date.now() - lastAudioErrorAt > AUDIO_RETRY_BACKOFF_MS
+  ) {
+    startAudio();
+  }
+  updateSoundUi();
+
+  for (const v of (s.videos || [])) {
+    if (knownVideos.has(v.index)) continue;
+    knownVideos.add(v.index);
+    const card = document.createElement('div');
+    card.className = 'card video-card';
+    const video = document.createElement('video');
+    video.controls = true;
+    video.preload = 'metadata';
+    video.src = v.url;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.innerHTML = `<span>job ${v.index}</span><a href="${v.url}" style="color:var(--accent)">下载 MP4</a>`;
+    card.appendChild(video);
+    card.appendChild(meta);
+    $('videoGrid').appendChild(card);
+  }
+}
+
+async function fetchJson(url, timeoutMs = 2500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function poll() {
+  try {
+    updateStatus(await fetchJson('/status.json', STATUS_TIMEOUT_MS));
+  } catch (e) {
+    $('phaseText').textContent = '服务连接超时/中断';
+    $('liveDot').className = 'live-dot';
+    const reason = e && e.name === 'AbortError' ? '请求 /status.json 超时' : ((e && e.message) || String(e));
+    $('error').textContent = `无法连接后端：${reason}。请确认项目进程仍在运行，或检查端口转发目标。`;
+  } finally {
+    setTimeout(poll, STATUS_POLL_MS);
+  }
+}
+
+function applyFrontendConfig(cfg) {
+  const numberOr = (value, fallback) => (
+    typeof value === 'number' && Number.isFinite(value) ? value : fallback
+  );
+  AUDIO_STALL_MS = Math.max(0, numberOr(cfg.audio_stall_ms, AUDIO_STALL_MS));
+  AUDIO_DRIFT_S = Math.max(0, numberOr(cfg.audio_drift_seconds, AUDIO_DRIFT_S));
+  STATUS_POLL_MS = Math.max(20, numberOr(cfg.status_poll_ms, STATUS_POLL_MS));
+  SYNC_INTERVAL_MS = Math.max(10, numberOr(cfg.sync_interval_ms, SYNC_INTERVAL_MS));
+  STATUS_TIMEOUT_MS = Math.max(100, numberOr(cfg.status_timeout_ms, STATUS_TIMEOUT_MS));
+  STREAM_RECONNECT_MS = Math.max(0, numberOr(cfg.stream_reconnect_ms, STREAM_RECONNECT_MS));
+  AUDIO_RETRY_BACKOFF_MS = Math.max(
+    0, numberOr(cfg.audio_retry_backoff_ms, AUDIO_RETRY_BACKOFF_MS)
+  );
+  if (typeof cfg.sound_enabled === 'boolean') soundEnabled = cfg.sound_enabled;
+}
+
+(async () => {
+  try {
+    applyFrontendConfig(await fetchJson('/frontend_config.json', 2500));
+  } catch (e) {
+    console.warn('前端配置不可用，使用内置默认值', e);
+  }
+  updateSoundUi();
+  setInterval(syncAudioToFrames, SYNC_INTERVAL_MS);
+  poll();
+})();
+</script>
+</body>
+</html>
