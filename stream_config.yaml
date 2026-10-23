@@ -10,8 +10,8 @@
 # 路径按“当前工作目录”解析；run_stream.sh 会先切换到项目根目录。
 
 # ---- 模型 ----
-distilled-checkpoint-path: checkpoints/avatarforever-ltx-2.3-22b.safetensors
-gemma-root: checkpoints/gemma-3-12b-it-qat-q4_0-unquantized
+distilled-checkpoint-path: init_model/avatarforever-ltx-2.3-22b.safetensors
+gemma-root: init_model/gemma-3-12b-it-qat-q4_0-unquantized
 
 # ---- 音频输入 ----
 # watch: true 时，先处理目录里已有的音频，然后持续等待新文件。
@@ -41,8 +41,12 @@ ar-sink-first-chunk: true
 ar-relative-positions: true
 window-chunks: 2
 carry-history: true
+# 把上一段解码后的最后一帧作为下一段的硬首帧条件（第一段仍用 --first-frame-condition-image-path）。
+carry-last-frame-as-first-frame: true
 # 非末段视频向上扩展到完整 chunk 边界，并给音轨补静音，保证视频不短于音频。
 trim-to-full-chunks: true
+# 把补齐时长平均分到音频开头和结尾，给每段语音一个静音引导。
+split-audio-padding: true
 
 # 第一个可见 GPU 跑 DiT，auto 使用第二个可见 GPU 做 VAE 解码。
 decode-device: auto

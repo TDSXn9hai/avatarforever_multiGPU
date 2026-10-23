@@ -185,6 +185,7 @@ let lastPhase = 'loading';
 let streamConnected = false;
 let lastStreamErrorAt = 0;
 let lastStatus = null;
+let lastStatusAt = 0;
 let audioStarting = false;
 let lastAudioErrorAt = 0;
 let hasPlayed = false;
@@ -193,7 +194,7 @@ let lastFrameAdvanceAt = 0;
 let bufferingPaused = false;
 let userPaused = false;
 let expectedPause = false;
-let AUDIO_STALL_MS = 60;        // pause audio when no new frame for this long
+let AUDIO_STALL_MS = 500;       // pause audio only after a real multi-poll stall
 let AUDIO_DRIFT_S = 0.20;       // seek when audio/video drift exceeds this
 let STATUS_POLL_MS = 100;
 let SYNC_INTERVAL_MS = 50;
@@ -254,6 +255,9 @@ function updateSoundUi() {
 
 function isVideoStalled() {
   if (!lastStatus || (lastStatus.frames_published || 0) <= 0) return true;
+  // /status.json is polled every STATUS_POLL_MS.  A stale status is not evidence of a
+  // stalled video, so never pause audio based on an old snapshot.
+  if (!lastStatusAt || Date.now() - lastStatusAt > AUDIO_STALL_MS) return false;
   if (!lastFrameAdvanceAt) return false;
   return Date.now() - lastFrameAdvanceAt > AUDIO_STALL_MS;
 }
@@ -320,6 +324,8 @@ async function resumeAudioFromBuffer() {
 function syncAudioToFrames() {
   if (!soundEnabled || userPaused || !lastStatus) return;
   if (lastPhase !== 'generating' && lastPhase !== 'encoding') return;
+  // Do not infer a video stall from stale status data; the poll loop may simply be late.
+  if (!lastStatusAt || Date.now() - lastStatusAt > AUDIO_STALL_MS) return;
   const frames = lastStatus.frames_published || 0;
   if (frames <= 0) return;
 
@@ -467,6 +473,7 @@ audio.addEventListener('pause', () => {
 audio.addEventListener('ended', () => { audioStarted = false; updateSoundUi(); });
 
 function updateStatus(s) {
+  lastStatusAt = Date.now();
   const phase = s.phase || 'unknown';
   const phaseMap = {
     loading: '模型加载中',
@@ -528,7 +535,9 @@ function updateStatus(s) {
     } else if (phase === 'waiting' || waiting || phase === 'generating' || phase === 'encoding') {
       if (!streamConnected) connectStream();
       if (waiting || preparing) {
-        pauseAudioSilently();
+        // When we are merely waiting for the next file, let the current audio finish
+        // naturally.  Only stop it immediately when the next job is actually ready.
+        if (preparing) pauseAudioSilently();
         placeholder.innerHTML = (preparing && !waiting) ? '正在准备下一段…' : '等待下一段音频…';
       }
       if (hasFrames) {
@@ -538,7 +547,6 @@ function updateStatus(s) {
       }
     } else if (phase === 'done') {
       // Watch stopped: keep the last live frame; videos are available in the grid below.
-      pauseAudioSilently();
       waitOverlay.classList.add('hidden');
     } else {
       placeholder.style.display = 'grid';
@@ -566,7 +574,6 @@ function updateStatus(s) {
     }
   } else if (phase === 'done') {
     waitOverlay.classList.add('hidden');
-    pauseAudioSilently();
     const videos = s.videos || [];
     if (videos.length) {
       disconnectStream();
@@ -689,6 +696,9 @@ function applyFrontendConfig(cfg) {
   AUDIO_STALL_MS = Math.max(0, numberOr(cfg.audio_stall_ms, AUDIO_STALL_MS));
   AUDIO_DRIFT_S = Math.max(0, numberOr(cfg.audio_drift_seconds, AUDIO_DRIFT_S));
   STATUS_POLL_MS = Math.max(20, numberOr(cfg.status_poll_ms, STATUS_POLL_MS));
+  // frames_published is only observed through /status.json, so the stall detector must
+  // tolerate several polling intervals of jitter.
+  AUDIO_STALL_MS = Math.max(AUDIO_STALL_MS, STATUS_POLL_MS * 3);
   SYNC_INTERVAL_MS = Math.max(10, numberOr(cfg.sync_interval_ms, SYNC_INTERVAL_MS));
   STATUS_TIMEOUT_MS = Math.max(100, numberOr(cfg.status_timeout_ms, STATUS_TIMEOUT_MS));
   STREAM_RECONNECT_MS = Math.max(0, numberOr(cfg.stream_reconnect_ms, STREAM_RECONNECT_MS));

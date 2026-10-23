@@ -4,8 +4,9 @@
 # 修改后需要重启推理入口并刷新页面；页面本身不需要重新构建。
 # 命令行可用 --frontend-config <file> 指定其它文件，或用 --no-frontend-config 忽略本文件。
 
-# 多久没有新视频帧就暂停音频（毫秒）。20 fps 下单帧间隔为 50 ms，60 ms 略高于一帧。
-audio_stall_ms: 60
+# 多久没有新视频帧就暂停音频（毫秒）。必须明显大于 status_poll_ms；否则状态轮询的
+# 100 ms 抖动会被误判为视频卡顿，导致音频反复暂停/恢复。
+audio_stall_ms: 500
 
 # 音频与视频进度偏差超过多少秒时 seek 音频纠正。
 audio_drift_seconds: 0.20

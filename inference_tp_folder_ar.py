@@ -120,6 +120,15 @@ def _add_folder_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--split-audio-padding",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Split the audio/video duration gap evenly between a silent lead-in and a silent tail "
+            "(default on). Use --no-split-audio-padding to put all padding at the end."
+        ),
+    )
+    parser.add_argument(
         "--sink-first-video-chunk",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -328,6 +337,7 @@ def main() -> None:  # noqa: PLR0915
                             video_duration=num_frames / args.frame_rate,
                             output_dir=args.output_dir,
                             index=index,
+                            split_padding=args.split_audio_padding,
                         )
                     ),
                 }

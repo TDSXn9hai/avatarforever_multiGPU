@@ -129,6 +129,7 @@ def prepare_padded_audio(
     video_duration: float,
     output_dir: Path,
     index: int,
+    split_padding: bool = False,
 ) -> Path:
     """Write a WAV padded/truncated to exactly ``video_duration`` seconds.
 
@@ -136,6 +137,9 @@ def prepare_padded_audio(
     chunk boundary), so the source audio is often shorter than the video.  Using this
     file as the pipeline input keeps the generated audio track and the MP4 duration in
     sync; the frontend also serves it through ``/audio/<index>``.
+
+    ``split_padding`` puts half of the missing samples before the speech and half after,
+    so each clip has a short silent lead-in as well as a silent tail.
     """
     import wave
 
@@ -170,9 +174,16 @@ def prepare_padded_audio(
     target_samples = max(1, round(float(video_duration) * sample_rate))
     current_samples = int(waveform.shape[-1])
     if current_samples < target_samples:
+        missing = target_samples - current_samples
+        if split_padding:
+            pad_before = missing // 2
+            pad_after = missing - pad_before
+        else:
+            pad_before = 0
+            pad_after = missing
         waveform = np.pad(
             waveform,
-            ((0, 0), (0, target_samples - current_samples)),
+            ((0, 0), (pad_before, pad_after)),
             mode="constant",
         )
     elif current_samples > target_samples:

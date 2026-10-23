@@ -320,6 +320,20 @@ class AsyncChunkVAEDecoder:
         if self._error is not None:
             raise RuntimeError(f"async VAE decoding failed: {self._error}") from self._error
 
+    def first_frame(self) -> torch.Tensor | None:
+        """Return a copy of the first decoded ``[1, 3, 1, H, W]`` frame in [-1, 1]."""
+        with self._cond:
+            if not self._frames:
+                return None
+            return self._frames[0].detach().clone()
+
+    def last_frame(self) -> torch.Tensor | None:
+        """Return a copy of the last decoded ``[1, 3, 1, H, W]`` frame in [-1, 1]."""
+        with self._cond:
+            if not self._frames:
+                return None
+            return self._frames[-1].detach().clone()
+
     def abort(self, error: BaseException | None = None) -> None:
         with self._cond:
             if self._error is None:

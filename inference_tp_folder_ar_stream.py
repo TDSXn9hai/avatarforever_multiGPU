@@ -262,6 +262,23 @@ def _resolve_decode_device(spec: str | None, main_device: torch.device) -> torch
     return torch.device(spec)
 
 
+def _save_frame_png(frame: torch.Tensor, path: Path) -> Path:
+    """Save one decoded ``[1, 3, 1, H, W]`` frame in [-1, 1] as an RGB PNG."""
+    if frame.ndim != 5 or frame.shape[0] < 1 or frame.shape[2] < 1:
+        raise ValueError(f"expected decoded frame [1, 3, 1, H, W], got {tuple(frame.shape)}")
+    if frame.shape[1] != 3:
+        raise ValueError(f"expected 3 RGB channels, got {tuple(frame.shape)}")
+
+    import numpy as np
+    from PIL import Image
+
+    rgb = ((frame[0, :, 0].detach().float().clamp(-1.0, 1.0) + 1.0) * 127.5).round().to(torch.uint8)
+    array = rgb.permute(1, 2, 0).cpu().numpy()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.ascontiguousarray(array), mode="RGB").save(path)
+    return path
+
+
 def _ipv4_addresses() -> list[str]:
     """Best-effort list of non-loopback IPv4 addresses of this VM/container."""
     values: list[str] = []
@@ -339,6 +356,15 @@ def _add_stream_arguments(parser) -> None:  # noqa: ANN001
         help=(
             "Encode and mux an MP4 for every job (default: off). Live MJPEG/audio streaming and "
             "cross-job continuity are unaffected; without it no /video/<job> files exist."
+        ),
+    )
+    stream.add_argument(
+        "--carry-last-frame-as-first-frame",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use the last decoded frame of each job as the hard first-frame image condition of the "
+            "next job (default: on). The first job still uses --first-frame-condition-image-path."
         ),
     )
     stream.add_argument(
@@ -510,21 +536,18 @@ def main() -> None:  # noqa: PLR0915
         loras=[],
         device=device,
     )
-    images = build_first_frame_images(
+    initial_images = build_first_frame_images(
         args.first_frame_condition_image_path,
         strength=args.first_frame_image_strength,
         crf=args.first_frame_image_crf,
     )
-    first_frame_channel_condition_latent = encode_first_frame_channel_condition(
+    initial_first_frame_channel_condition_latent = encode_first_frame_channel_condition(
         pipeline,
         image_path=args.first_frame_condition_image_path,
         enabled=args.first_frame_channel_condition,
         height=args.height,
         width=args.width,
         crf=args.first_frame_image_crf,
-    )
-    derive_channel_condition_from_first_chunk = (
-        args.first_frame_channel_condition and first_frame_channel_condition_latent is None
     )
     tiling_config = build_tiling_config(args)
     prompt = args.prompt or STREAMING_DEFAULT_PROMPT
@@ -567,6 +590,7 @@ def main() -> None:  # noqa: PLR0915
     history_video = history_audio = None
     history_video_ranges: list[tuple[int, int]] = []
     history_audio_ranges: list[tuple[int, int]] = []
+    next_first_frame_path: Path | None = None
     summary_path = args.summary_path or (args.output_dir / "streaming_summary.json")
     first_start_event = threading.Event()
     first_start_event.set()
@@ -589,6 +613,27 @@ def main() -> None:  # noqa: PLR0915
     ) -> AsyncChunkVAEDecoder:
         nonlocal sink_video, sink_audio, history_video, history_audio
         nonlocal history_video_ranges, history_audio_ranges
+        nonlocal next_first_frame_path
+
+        use_previous_last_frame = (
+            args.carry_last_frame_as_first_frame and index > 1 and next_first_frame_path is not None
+        )
+        if use_previous_last_frame:
+            job_images = build_first_frame_images(
+                next_first_frame_path,
+                strength=args.first_frame_image_strength,
+                crf=args.first_frame_image_crf,
+            )
+        else:
+            job_images = initial_images
+        # Later jobs derive the appearance condition from the image-conditioned chunk 0.
+        job_first_frame_channel_condition_latent = (
+            None if use_previous_last_frame else initial_first_frame_channel_condition_latent
+        )
+        job_derive_channel_condition_from_first_chunk = (
+            args.first_frame_channel_condition
+            and job_first_frame_channel_condition_latent is None
+        )
 
         duration = _audio_duration_seconds(audio_path)
         num_frames = args.num_frames or _frames_for_duration(duration, args.frame_rate)
@@ -631,11 +676,16 @@ def main() -> None:  # noqa: PLR0915
 
         output_path = _output_path(args, index=index, audio_stem=audio_path.stem)
         log_path = _job_log_path(output_path)
+        video_duration = num_frames / args.frame_rate
+        total_padding = max(0.0, video_duration - duration)
+        padding_before = total_padding / 2.0 if args.split_audio_padding else 0.0
+        padding_after = total_padding - padding_before
         padded_audio_path = prepare_padded_audio(
             audio_path,
-            video_duration=num_frames / args.frame_rate,
+            video_duration=video_duration,
             output_dir=args.output_dir,
             index=index,
+            split_padding=args.split_audio_padding,
         )
         state.register_audio(index, padded_audio_path)
         video_chunks_number = num_frames
@@ -707,6 +757,11 @@ def main() -> None:  # noqa: PLR0915
             "trimmed_to_full_chunks": False,
             "expanded_to_full_chunks": expanded,
             "padded_audio": str(padded_audio_path),
+            "audio_duration_seconds": round(duration, 4),
+            "video_duration_seconds": round(video_duration, 4),
+            "audio_padding_before_seconds": round(padding_before, 4),
+            "audio_padding_after_seconds": round(padding_after, 4),
+            "split_audio_padding": bool(args.split_audio_padding),
             "sink_video_tokens": int(effective_sink.shape[1]) if effective_sink is not None else 0,
             "carried_video_tokens": int(effective_history.shape[1]) if effective_history is not None else 0,
             "carried_chunks": len(history_video_ranges) if args.carry_history else 0,
@@ -715,6 +770,15 @@ def main() -> None:  # noqa: PLR0915
                 f"previous video chunks {history_indices}"
                 if (effective_history is not None and index > 1)
                 else "-"
+            ),
+            "first_frame_source": (
+                str(next_first_frame_path)
+                if use_previous_last_frame
+                else (
+                    str(args.first_frame_condition_image_path)
+                    if args.first_frame_condition_image_path is not None
+                    else "-"
+                )
             ),
             "sink_first_chunk_in_video": bool(sink_first_chunk),
             "output": str(output_path) if args.package_video else None,
@@ -735,7 +799,7 @@ def main() -> None:  # noqa: PLR0915
                     width=args.width,
                     num_frames=num_frames,
                     frame_rate=args.frame_rate,
-                    images=images,
+                    images=job_images,
                     audio_path=str(padded_audio_path),
                     audio_start_time=0.0,
                     audio_max_duration=num_frames / args.frame_rate,
@@ -750,10 +814,10 @@ def main() -> None:  # noqa: PLR0915
                     ar_history_feature_cache=args.ar_history_feature_cache,
                     ar_first_frame_prefix_condition=args.first_frame_prefix_condition,
                     ar_first_frame_condition_position=args.first_frame_condition_position,
-                    first_frame_channel_condition_latent=first_frame_channel_condition_latent,
+                    first_frame_channel_condition_latent=job_first_frame_channel_condition_latent,
                     first_frame_channel_condition_init=args.first_frame_channel_condition_init,
                     first_frame_channel_condition_mode=args.first_frame_channel_condition_mode,
-                    ar_first_frame_channel_condition_from_first_chunk=derive_channel_condition_from_first_chunk,
+                    ar_first_frame_channel_condition_from_first_chunk=job_derive_channel_condition_from_first_chunk,
                     ar_channel_condition_current_chunk_only=args.first_frame_channel_condition,
                     fast_infer=True,
                 )
@@ -780,6 +844,26 @@ def main() -> None:  # noqa: PLR0915
             state.update(phase="error", error=str(exc))
             logging.exception("Job %d failed", index)
             raise
+
+        if args.carry_last_frame_as_first_frame:
+            first_frame = session.first_frame()
+            last_frame = session.last_frame()
+            if last_frame is None:
+                raise RuntimeError(f"job {index} produced no decoded frame for the next first-frame condition")
+            if first_frame is not None:
+                first_path = (
+                    args.output_dir
+                    / "boundary_frames"
+                    / f"{int(index):04d}_{audio_path.stem}_first.png"
+                )
+                _save_frame_png(first_frame, first_path)
+            boundary_path = (
+                args.output_dir
+                / "boundary_frames"
+                / f"{int(index):04d}_{audio_path.stem}_last.png"
+            )
+            next_first_frame_path = _save_frame_png(last_frame, boundary_path)
+            print(f"[job {index}] 尾帧已保存，将作为下一段首帧：{next_first_frame_path}")
 
         pipeline.set_streaming_session(None)
         if args.package_video:
